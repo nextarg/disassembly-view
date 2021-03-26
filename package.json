@@ -16,6 +16,12 @@
 	"categories": [
 		"Debuggers"
 	],
+	"keywords": [
+		"Disassembly",
+		"C",
+		"C++",
+		"Assembly"
+	],
 	"activationEvents": [
 		"onDebug",
 		"onCommand:nextarg.disassembly-view.disassembly",
