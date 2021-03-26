@@ -4,7 +4,7 @@
 	"private": true,
 	"displayName": "disassembly-view",
 	"description": "",
-	"version": "0.0.1",
+	"version": "0.0.2",
 	"publisher": "nextarg",
 	"repository": {
 		"type": "git",
