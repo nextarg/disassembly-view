@@ -1,5 +1,6 @@
 {
 	"name": "disassembly-view",
+	"preview": true,
 	"private": true,
 	"displayName": "disassembly-view",
 	"description": "",
