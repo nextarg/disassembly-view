@@ -174,14 +174,21 @@ export class DisassemblyView {
       };
       const evaluateResponse = await vscode.debug.activeDebugSession.customRequest('evaluate', evaluateArguments);
 
+      if (!evaluateResponse.memoryReference) {
+        onError(evaluateResponse.result);
+        return;
+      }
+
       let disasmInternal = async (memoryReference: string, instructionOffset: number, instructionCount: number) => {
-        let disassembleArguments: DebugProtocol.DisassembleArguments = {
-          memoryReference: memoryReference,
-          instructionOffset: instructionOffset,
-          instructionCount: instructionCount,
-        };
-        const disassembleResponse = await vscode.debug.activeDebugSession?.customRequest('disassemble', disassembleArguments);
-        this.panel.webview.postMessage({ command: 'update', instructions: disassembleResponse.instructions });
+         if (memoryReference) {
+          let disassembleArguments: DebugProtocol.DisassembleArguments = {
+            memoryReference: memoryReference,
+            instructionOffset: instructionOffset,
+            instructionCount: instructionCount,
+          };
+          const disassembleResponse = await vscode.debug.activeDebugSession?.customRequest('disassemble', disassembleArguments);
+          this.panel.webview.postMessage({ command: 'update', instructions: disassembleResponse.instructions });
+        }
         DisassemblyView.disassembling = false;
       };
 
