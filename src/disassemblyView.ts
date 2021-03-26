@@ -180,7 +180,7 @@ export class DisassemblyView {
       }
 
       let disasmInternal = async (memoryReference: string, instructionOffset: number, instructionCount: number) => {
-         if (memoryReference) {
+        if (memoryReference) {
           let disassembleArguments: DebugProtocol.DisassembleArguments = {
             memoryReference: memoryReference,
             instructionOffset: instructionOffset,
@@ -226,28 +226,34 @@ export class DisassemblyView {
   }
 
   private async setPC() {
-    try {
-      let evaluateArguments: DebugProtocol.EvaluateArguments = {
-        expression: 'RIP',
-        context: 'repl',
-        frameId: DisassemblyView.frameId,
-      };
-      const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
-      if (evaluateResponse.memoryReference) {
-        this.panel.webview.postMessage({ command: 'setPC', pc: evaluateResponse.memoryReference });
-      } else {
+    if (vscode.debug.activeDebugSession?.type === 'cppvsdbg' || vscode.debug.activeDebugSession?.type === 'cppdbg') {
+      if (vscode.debug.activeDebugSession?.type === 'cppdbg' && vscode.debug.activeDebugSession?.configuration.MIMode != 'gdb') {
+        return;
+      }
+
+      try {
         let evaluateArguments: DebugProtocol.EvaluateArguments = {
-          expression: 'EIP',
+          expression: '$rip',
           context: 'repl',
           frameId: DisassemblyView.frameId,
         };
         const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
         if (evaluateResponse.memoryReference) {
           this.panel.webview.postMessage({ command: 'setPC', pc: evaluateResponse.memoryReference });
+        } else {
+          let evaluateArguments: DebugProtocol.EvaluateArguments = {
+            expression: '$eip',
+            context: 'repl',
+            frameId: DisassemblyView.frameId,
+          };
+          const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+          if (evaluateResponse.memoryReference) {
+            this.panel.webview.postMessage({ command: 'setPC', pc: evaluateResponse.memoryReference });
+          }
         }
+      } catch (error) {
+        vscode.window.showErrorMessage(error.message);
       }
-    } catch (error) {
-      vscode.window.showErrorMessage(error.message);
     }
   }
 
