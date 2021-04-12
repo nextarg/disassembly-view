@@ -11,10 +11,21 @@ export class DisassemblyView {
   private static readonly viewType = 'nextarg.DisassemblyView';
   private static readonly title = 'DisassemblyView';
   private static dbgMode: string;
+  private static gdbPyScript: string;
+  private static isLocationResolutionEnabled: boolean | undefined;
 
   private disposables: vscode.Disposable[] = [];
 
   public static register(context: vscode.ExtensionContext) {
+    DisassemblyView.isLocationResolutionEnabled = vscode.workspace.getConfiguration().get('disassembly.resolveLocations');
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('disassembly.resolveLocations')) {
+        DisassemblyView.isLocationResolutionEnabled = vscode.workspace.getConfiguration().get('disassembly.resolveLocations');
+      }
+    }));
+
+    DisassemblyView.gdbPyScript = path.join(context.extensionPath, 'scripts', 'gdb', 'utils.py');
+
     context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', {
       createDebugAdapterTracker(session) {
         return {
@@ -187,6 +198,9 @@ export class DisassemblyView {
             instructionCount: instructionCount,
           };
           const disassembleResponse = await vscode.debug.activeDebugSession?.customRequest('disassemble', disassembleArguments);
+
+          await this.resolveLocations(disassembleResponse.instructions);
+
           this.panel.webview.postMessage({ command: 'update', instructions: disassembleResponse.instructions });
         }
         DisassemblyView.disassembling = false;
@@ -222,6 +236,102 @@ export class DisassemblyView {
       }
     } catch (error) {
       onError(error.message);
+    }
+  }
+
+  private async loadGDBScriptIfNecessary() {
+    let evaluateArguments: DebugProtocol.EvaluateArguments = {
+      expression: '$get_location',
+      context: 'repl',
+      frameId: DisassemblyView.frameId,
+    };
+    const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+    if (evaluateResponse.type !== '<internal function>') {
+      let evaluateArguments: DebugProtocol.EvaluateArguments = {
+        expression: '-exec source ' + DisassemblyView.gdbPyScript,
+        context: 'repl',
+        frameId: DisassemblyView.frameId,
+      };
+      await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+    }
+  }
+
+  private async resolveLocations_GDB(instructions: any) {
+    await this.loadGDBScriptIfNecessary();
+
+    const addrs = instructions?.map((inst: any) => inst.address);
+    let evaluateArguments: DebugProtocol.EvaluateArguments = {
+      expression: '$resolve_locations(' + addrs.join(',') + ')',
+      context: 'repl',
+      frameId: DisassemblyView.frameId,
+    };
+    const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+    let variablesArguments: DebugProtocol.VariablesArguments = {
+      variablesReference: evaluateResponse.variablesReference
+    }
+    const variablesResponse = await vscode.debug.activeDebugSession?.customRequest('variables', variablesArguments);
+    let b = variablesResponse.variables.reduce((accumulator: string, currentValue: DebugProtocol.Variable) => {
+      return accumulator + currentValue.value.slice(-2, -1);
+    }, '');
+
+    let validAddressList;
+    try {
+      let addrsStr = Buffer.from(b, 'base64').toString();
+      validAddressList = JSON.parse(addrsStr);
+    }
+    catch (error) {
+    }
+
+    if (Array.isArray(validAddressList) && validAddressList.length) {
+      let validAddressSet = new Set(validAddressList);
+      for (let i = 0; i < instructions?.length; ++i) {
+        let inst = instructions[i];
+        if (!inst.location && validAddressSet.has(+inst.address)) {
+          let evaluateArguments: DebugProtocol.EvaluateArguments = {
+            expression: '$get_location(' + inst.address + ')',
+            context: 'repl',
+            frameId: DisassemblyView.frameId,
+          };
+          const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+
+          if (!evaluateResponse.result) {
+            continue
+          }
+
+          let variablesArguments: DebugProtocol.VariablesArguments = {
+            variablesReference: evaluateResponse.variablesReference
+          }
+          const variablesResponse = await vscode.debug.activeDebugSession?.customRequest('variables', variablesArguments);
+          let b = variablesResponse.variables.reduce((accumulator: string, currentValue: DebugProtocol.Variable) => {
+            return accumulator + currentValue.value.slice(-2, -1);
+          }, '');
+
+          try {
+            const locationObj = JSON.parse(Buffer.from(b, 'base64').toString());
+            if (+locationObj.pc == +inst.address && locationObj.line) {
+              inst.line = inst.endLine = +locationObj.line;
+              let source: DebugProtocol.Source = {
+                path: locationObj.fullname,
+                name: locationObj.filename
+              };
+              inst.location = source;
+            }
+          }
+          catch (error) {
+          }
+        }
+      }
+    }
+  }
+
+  private async resolveLocations(instructions: any) {
+    if (!DisassemblyView.isLocationResolutionEnabled) {
+      return;
+    }
+    if (Array.isArray(instructions) && instructions.length) {
+      if (vscode.debug.activeDebugSession?.type === 'cppdbg' && vscode.debug.activeDebugSession?.configuration.MIMode === 'gdb') {
+        await this.resolveLocations_GDB(instructions);
+      }
     }
   }
 

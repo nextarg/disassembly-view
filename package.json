@@ -29,6 +29,18 @@
 	],
 	"main": "./dist/extension.js",
 	"contributes": {
+		"configuration": [
+			{
+				"title": "Disassembly View",
+				"properties": {
+					"disassembly.resolveLocations": {
+						"type": "boolean",
+						"default": false,
+						"description": "This option takes time, however resolves the source location when using vscode-cpptools + gdb."
+					}
+				}
+			}
+		],
 		"commands": [
 			{
 				"command": "nextarg.disassembly-view.disassembly",

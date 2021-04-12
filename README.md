@@ -1,4 +1,4 @@
-# Disassembly view using DAP
+# VSCode Disassembly view using DAP
 
 ![](https://raw.githubusercontent.com/nextarg/disassembly-view/main/images/disassembly-view.gif)
 
@@ -9,6 +9,11 @@
   The Watch expression to be added can be a non-existent value. (Ex: aaaaaa)
 
 ![](https://raw.githubusercontent.com/nextarg/disassembly-view/main/images/watch.png)
+
+# Tested environments
+
+- Windows10 + vscode-cpptools + cppvsdbg
+- Windows10 + vscode-cpptools + mingw + gdb + the latest MIEngine on github
 
 # Execution Requirements
 
@@ -41,3 +46,9 @@ Select **Go To Disassembly** from the editor's context menu.
 Select **Go To Source** from the disassembly view context menu.
 
 ![](https://raw.githubusercontent.com/nextarg/disassembly-view/main/images/goto-source.gif)
+
+## Settings
+
+### disassembly.resolveLocations
+
+This option takes time, however resolves the source location when using vscode-cpptools + gdb.
