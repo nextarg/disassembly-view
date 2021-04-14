@@ -13,6 +13,7 @@ export class DisassemblyView {
   private static dbgMode: string;
   private static gdbPyScript: string;
   private static isLocationResolutionEnabled: boolean | undefined;
+  private static capabilities = new Map();
 
   private disposables: vscode.Disposable[] = [];
 
@@ -45,7 +46,15 @@ export class DisassemblyView {
                 DisassemblyView.onModeChange(m);
                 break;
             }
+            switch (m.command) {
+              case 'initialize':
+                DisassemblyView.capabilities.set(session.id, m.body);
+                break;
+            }
           },
+          onWillStopSession: () => {
+            DisassemblyView.capabilities.delete(session.id);
+          }
         };
       }
     }));
@@ -55,6 +64,12 @@ export class DisassemblyView {
     }));
     context.subscriptions.push(vscode.commands.registerCommand('nextarg.disassembly-view.gotoDisassembly', () => {
       if (!vscode.debug.activeDebugSession) {
+        return;
+      }
+      let debugSession = vscode.debug.activeDebugSession;
+      if (!DisassemblyView.debugSessionHasCapability(debugSession, 'supportsDisassembleRequest') ||
+        !DisassemblyView.debugSessionHasCapability(debugSession, 'supportsGotoTargetsRequest')) {
+        vscode.window.showErrorMessage('Unsupported DA');
         return;
       }
 
@@ -67,7 +82,7 @@ export class DisassemblyView {
       if (vscode.window.activeTextEditor) {
         gotoTargetsRequest.line = vscode.window.activeTextEditor.selection.active.line + 1;
       }
-      vscode.debug.activeDebugSession.customRequest('gotoTargets', gotoTargetsRequest).then((gotoTargetsResponse) => {
+      debugSession.customRequest('gotoTargets', gotoTargetsRequest).then((gotoTargetsResponse) => {
         DisassemblyView.show(context, context.extensionUri);
         DisassemblyView.currentPanel?.panel.webview.postMessage({
           command: 'disassemble', arguments: {
@@ -110,6 +125,17 @@ export class DisassemblyView {
     DisassemblyView.dbgMode = message.event;
   }
 
+  private static debugSessionHasCapability(debugSession: vscode.DebugSession | undefined,
+    capability: 'supportsDisassembleRequest' | 'supportsGotoTargetsRequest'): boolean {
+    if (DisassemblyView.capabilities.has(debugSession?.id)) {
+      let capabilities = DisassemblyView.capabilities.get(debugSession?.id);
+      if (capabilities.hasOwnProperty(capability) && capabilities[capability]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // ****************************************************************************************************
 
   private constructor(private context: vscode.ExtensionContext, private panel: vscode.WebviewPanel, private extensionUri: vscode.Uri) {
@@ -120,7 +146,7 @@ export class DisassemblyView {
     this.panel.onDidChangeViewState(
       e => {
         if (this.panel.visible) {
-          this.setPC();
+          this.setPC(vscode.debug.activeDebugSession);
         }
       },
       null,
@@ -133,7 +159,7 @@ export class DisassemblyView {
       message => {
         switch (message.command) {
           case 'disassemble':
-            this.disassemble(message.arguments);
+            this.disassemble(vscode.debug.activeDebugSession, message.arguments);
             return;
           case 'gotoSource':
             vscode.workspace.openTextDocument(vscode.Uri.file(message.arguments.path)).then(doc => {
@@ -152,7 +178,15 @@ export class DisassemblyView {
 
   }
 
-  private async disassemble(args: DebugProtocol.DisassembleArguments) {
+  private async disassemble(debugSession: vscode.DebugSession | undefined, args: DebugProtocol.DisassembleArguments) {
+    if (!debugSession) {
+      vscode.window.showErrorMessage('ERR:debugging session');
+      return;
+    }
+    if (!DisassemblyView.debugSessionHasCapability(debugSession, 'supportsDisassembleRequest')) {
+      vscode.window.showErrorMessage('Unsupported DA');
+      return;
+    }
     if (DisassemblyView.disassembling) {
       return;
     }
@@ -166,24 +200,16 @@ export class DisassemblyView {
       DisassemblyView.disassembling = false;
     }
 
-    let onDebugSessionError = () => {
-      onError('ERR:debugging session');
-    }
-
     DisassemblyView.disassembling = true;
-    if (!vscode.debug.activeDebugSession) {
-      onDebugSessionError();
-      return;
-    }
 
-    this.setPC();
+    this.setPC(debugSession);
     try {
       let evaluateArguments: DebugProtocol.EvaluateArguments = {
         expression: args.memoryReference,
         context: 'repl',
         frameId: DisassemblyView.frameId,
       };
-      const evaluateResponse = await vscode.debug.activeDebugSession.customRequest('evaluate', evaluateArguments);
+      const evaluateResponse = await debugSession.customRequest('evaluate', evaluateArguments);
 
       if (!evaluateResponse.memoryReference) {
         onError(evaluateResponse.result);
@@ -197,9 +223,9 @@ export class DisassemblyView {
             instructionOffset: instructionOffset,
             instructionCount: instructionCount,
           };
-          const disassembleResponse = await vscode.debug.activeDebugSession?.customRequest('disassemble', disassembleArguments);
+          const disassembleResponse = await debugSession?.customRequest('disassemble', disassembleArguments);
 
-          await this.resolveLocations(disassembleResponse.instructions);
+          await this.resolveLocations(debugSession, disassembleResponse.instructions);
 
           this.panel.webview.postMessage({ command: 'update', instructions: disassembleResponse.instructions });
         }
@@ -213,7 +239,7 @@ export class DisassemblyView {
       if (0 === +address && instructionOffset < 0) {
         instructionOffset = 0;
       }
-      if (vscode.debug.activeDebugSession.type === 'cppvsdbg' && instructionOffset < 0) {
+      if (debugSession.type === 'cppvsdbg' && instructionOffset < 0) {
         let fetcheInstCount = 8;
         const i = +address - fetcheInstCount;
         if (i < 0) {
@@ -225,7 +251,7 @@ export class DisassemblyView {
           instructionCount: fetcheInstCount + 1,
           resolveSymbols: false
         };
-        const disassembleResponse = await vscode.debug.activeDebugSession.customRequest('disassemble', disassembleArguments);
+        const disassembleResponse = await debugSession.customRequest('disassemble', disassembleArguments);
         if (disassembleResponse.instructions[disassembleResponse.instructions.length - 1].address == evaluateResponse.memoryReference) {
           disasmInternal(disassembleResponse.instructions[disassembleResponse.instructions.length - 2].address, 0, instructionCount);
         } else {
@@ -239,25 +265,25 @@ export class DisassemblyView {
     }
   }
 
-  private async loadGDBScriptIfNecessary() {
+  private async loadGDBScriptIfNecessary(debugSession: vscode.DebugSession | undefined) {
     let evaluateArguments: DebugProtocol.EvaluateArguments = {
       expression: '$get_location',
       context: 'repl',
       frameId: DisassemblyView.frameId,
     };
-    const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+    const evaluateResponse = await debugSession?.customRequest('evaluate', evaluateArguments);
     if (evaluateResponse.type !== '<internal function>') {
       let evaluateArguments: DebugProtocol.EvaluateArguments = {
         expression: '-exec source ' + DisassemblyView.gdbPyScript,
         context: 'repl',
         frameId: DisassemblyView.frameId,
       };
-      await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+      await debugSession?.customRequest('evaluate', evaluateArguments);
     }
   }
 
-  private async resolveLocations_GDB(instructions: any) {
-    await this.loadGDBScriptIfNecessary();
+  private async resolveLocations_GDB(debugSession: vscode.DebugSession | undefined, instructions: any) {
+    await this.loadGDBScriptIfNecessary(debugSession);
 
     const addrs = instructions?.map((inst: any) => inst.address);
     let evaluateArguments: DebugProtocol.EvaluateArguments = {
@@ -265,11 +291,11 @@ export class DisassemblyView {
       context: 'repl',
       frameId: DisassemblyView.frameId,
     };
-    const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+    const evaluateResponse = await debugSession?.customRequest('evaluate', evaluateArguments);
     let variablesArguments: DebugProtocol.VariablesArguments = {
       variablesReference: evaluateResponse.variablesReference
     }
-    const variablesResponse = await vscode.debug.activeDebugSession?.customRequest('variables', variablesArguments);
+    const variablesResponse = await debugSession?.customRequest('variables', variablesArguments);
     let b = variablesResponse.variables.reduce((accumulator: string, currentValue: DebugProtocol.Variable) => {
       return accumulator + currentValue.value.slice(-2, -1);
     }, '');
@@ -292,7 +318,7 @@ export class DisassemblyView {
             context: 'repl',
             frameId: DisassemblyView.frameId,
           };
-          const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+          const evaluateResponse = await debugSession?.customRequest('evaluate', evaluateArguments);
 
           if (!evaluateResponse.result) {
             continue
@@ -301,7 +327,7 @@ export class DisassemblyView {
           let variablesArguments: DebugProtocol.VariablesArguments = {
             variablesReference: evaluateResponse.variablesReference
           }
-          const variablesResponse = await vscode.debug.activeDebugSession?.customRequest('variables', variablesArguments);
+          const variablesResponse = await debugSession?.customRequest('variables', variablesArguments);
           let b = variablesResponse.variables.reduce((accumulator: string, currentValue: DebugProtocol.Variable) => {
             return accumulator + currentValue.value.slice(-2, -1);
           }, '');
@@ -324,20 +350,20 @@ export class DisassemblyView {
     }
   }
 
-  private async resolveLocations(instructions: any) {
+  private async resolveLocations(debugSession: vscode.DebugSession | undefined, instructions: any) {
     if (!DisassemblyView.isLocationResolutionEnabled) {
       return;
     }
     if (Array.isArray(instructions) && instructions.length) {
-      if (vscode.debug.activeDebugSession?.type === 'cppdbg' && vscode.debug.activeDebugSession?.configuration.MIMode === 'gdb') {
-        await this.resolveLocations_GDB(instructions);
+      if (debugSession?.type === 'cppdbg' && debugSession?.configuration.MIMode === 'gdb') {
+        await this.resolveLocations_GDB(debugSession, instructions);
       }
     }
   }
 
-  private async setPC() {
-    if (vscode.debug.activeDebugSession?.type === 'cppvsdbg' || vscode.debug.activeDebugSession?.type === 'cppdbg') {
-      if (vscode.debug.activeDebugSession?.type === 'cppdbg' && vscode.debug.activeDebugSession?.configuration.MIMode != 'gdb') {
+  private async setPC(debugSession: vscode.DebugSession | undefined) {
+    if (debugSession?.type === 'cppvsdbg' || debugSession?.type === 'cppdbg') {
+      if (debugSession?.type === 'cppdbg' && debugSession?.configuration.MIMode != 'gdb') {
         return;
       }
 
@@ -347,7 +373,7 @@ export class DisassemblyView {
           context: 'repl',
           frameId: DisassemblyView.frameId,
         };
-        const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+        const evaluateResponse = await debugSession?.customRequest('evaluate', evaluateArguments);
         if (evaluateResponse.memoryReference) {
           this.panel.webview.postMessage({ command: 'setPC', pc: evaluateResponse.memoryReference });
         } else {
@@ -356,7 +382,7 @@ export class DisassemblyView {
             context: 'repl',
             frameId: DisassemblyView.frameId,
           };
-          const evaluateResponse = await vscode.debug.activeDebugSession?.customRequest('evaluate', evaluateArguments);
+          const evaluateResponse = await debugSession?.customRequest('evaluate', evaluateArguments);
           if (evaluateResponse.memoryReference) {
             this.panel.webview.postMessage({ command: 'setPC', pc: evaluateResponse.memoryReference });
           }
